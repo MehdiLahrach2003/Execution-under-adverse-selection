@@ -2,21 +2,22 @@
 """
 Regime analysis for execution under adverse selection.
 
-We sweep:
-- as_kick: strength of trade-triggered adverse selection kick
-- tox_persist: persistence of latent toxicity
+We sweep two market knobs:
+- as_kick_scale
+- tox_persist
 
-We compare:
-- AlwaysMarket (baseline, immediate)
-- ToxicityAware (adaptive, waits/filters on toxicity)
+BacktestParams (from your traceback) has only:
+- horizon
+- parent_qty
+- side
 
-Output:
-- reports/regime_grid.csv
+So MarketParams must be passed separately to run_backtest.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Type
+from dataclasses import is_dataclass, fields
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -28,9 +29,12 @@ from execlab.sim.market import MarketParams
 # Experiment configuration
 # -----------------------------
 SEEDS = list(range(50))
-
-AS_KICKS = [0.00, 0.01, 0.02, 0.03, 0.05]
+AS_KICK_SCALES = [0.00, 0.01, 0.02, 0.03, 0.05]
 TOX_PERSIST = [0.60, 0.75, 0.85, 0.95]
+
+PARENT_QTY = 1.0
+HORIZON = 200          # discrete steps (keep simple)
+SIDE = "buy"           # or "sell" depending on your enum; we'll keep as string
 
 OUT_CSV = "reports/regime_grid.csv"
 
@@ -40,7 +44,6 @@ OUT_CSV = "reports/regime_grid.csv"
 # -----------------------------
 def ensure_reports_dir() -> None:
     import os
-
     os.makedirs("reports", exist_ok=True)
 
 
@@ -53,131 +56,158 @@ def q90(x: List[float]) -> float:
 
 
 def _get_field(out: Any, name: str, default: Any = None) -> Any:
-    """
-    Support both dict outputs and dataclass-like outputs (attributes).
-    """
     if isinstance(out, dict):
         return out.get(name, default)
     return getattr(out, name, default)
 
 
 # -----------------------------
-# Dynamic resolution (robust)
+# Dynamic resolution
 # -----------------------------
-def resolve_mvp_runner() -> Callable[..., Any]:
-    """
-    Find an episode runner in execlab.backtest.mvp without assuming the exact name.
-    """
+def resolve_runner() -> Callable[..., Any]:
     import execlab.backtest.mvp as mvp
-
-    candidates = [
-        "run_single_episode",
-        "run_episode",
-        "run_one_episode",
-        "simulate_episode",
-        "run_mvp_episode",
-        "run",
-        "simulate",
-    ]
-
-    for name in candidates:
-        fn = getattr(mvp, name, None)
-        if callable(fn):
-            return fn
-
+    fn = getattr(mvp, "run_backtest", None)
+    if callable(fn):
+        return fn
     public = [n for n in dir(mvp) if not n.startswith("_")]
     raise ImportError(
-        "Could not find an episode runner in execlab.backtest.mvp. "
-        f"Tried: {candidates}. Available: {public}"
+        "Expected execlab.backtest.mvp.run_backtest to exist, but it was not found. "
+        f"Available symbols: {public}"
     )
 
 
-def call_runner(runner: Callable[..., Any], policy: Any, market_params: MarketParams, seed: int) -> Any:
-    """
-    Call the runner with common signatures.
-    """
-    for kwargs in (
-        {"policy": policy, "market_params": market_params, "seed": seed},
-        {"policy": policy, "bp": market_params, "seed": seed},
-        {"policy": policy, "params": market_params, "seed": seed},
-    ):
-        try:
-            return runner(**kwargs)
-        except TypeError:
-            pass
-
-    # positional fallback
-    return runner(policy, market_params, seed)
+def resolve_backtest_params_class():
+    import execlab.backtest.mvp as mvp
+    cls = getattr(mvp, "BacktestParams", None)
+    if cls is None:
+        public = [n for n in dir(mvp) if not n.startswith("_")]
+        raise ImportError(
+            "Expected execlab.backtest.mvp.BacktestParams to exist, but it was not found. "
+            f"Available symbols: {public}"
+        )
+    return cls
 
 
 def resolve_policy_instance(kind: str) -> Any:
-    """
-    Resolve and instantiate a policy class from execlab.strategy.execution.
-
-    kind in {"always_market", "toxicity_aware"}
-    """
     import execlab.strategy.execution as ex
 
-    # Heuristic candidate names (covers most naming conventions)
     if kind == "always_market":
-        candidates = [
-            "AlwaysMarketExecution",
-            "AlwaysMarket",
-            "AlwaysMarketExec",
-            "AlwaysMarketPolicy",
-            "MarketExecution",
-            "ImmediateExecution",
-        ]
-    elif kind == "toxicity_aware":
-        candidates = [
-            "ToxicityAwareExecution",
-            "ToxicityAware",
-            "ToxicityAwareExec",
-            "ToxicityAwarePolicy",
-            "ToxicityFilterExecution",
-            "ToxicityBasedExecution",
-        ]
-    else:
-        raise ValueError(f"Unknown policy kind: {kind}")
+        candidates = ["AlwaysMarketExecution", "AlwaysMarket", "AlwaysMarketPolicy", "AlwaysMarketExec"]
+        for name in candidates:
+            cls = getattr(ex, name, None)
+            if isinstance(cls, type):
+                return cls()
+        for n in dir(ex):
+            if n.startswith("_"):
+                continue
+            obj = getattr(ex, n)
+            if isinstance(obj, type):
+                low = n.lower()
+                if "market" in low and ("always" in low or "simple" in low or "immediate" in low):
+                    return obj()
 
-    # 1) direct name match
-    for name in candidates:
-        cls = getattr(ex, name, None)
-        if isinstance(cls, type):
-            return cls()
+    if kind == "toxicity_aware":
+        candidates = ["ToxicityAwareExecution", "ToxicityAware", "ToxicityFilterExecution", "ToxicityBasedExecution"]
+        for name in candidates:
+            cls = getattr(ex, name, None)
+            if isinstance(cls, type):
+                return cls()
+        for n in dir(ex):
+            if n.startswith("_"):
+                continue
+            obj = getattr(ex, n)
+            if isinstance(obj, type):
+                low = n.lower()
+                if "tox" in low or "toxic" in low:
+                    return obj()
 
-    # 2) fallback: search by substring in available classes
-    # (useful if you named it e.g. "ExecutionAlwaysMarket" or "ExecutionToxicityAware")
-    wanted_tokens = ["market"] if kind == "always_market" else ["tox", "toxic"]
-    available_classes = [
-        (n, getattr(ex, n)) for n in dir(ex) if not n.startswith("_") and isinstance(getattr(ex, n), type)
+    available = [
+        n for n in dir(ex)
+        if not n.startswith("_") and isinstance(getattr(ex, n), type)
     ]
+    raise ImportError(f"Could not resolve policy kind='{kind}'. Available classes: {available}")
 
-    for n, cls in available_classes:
-        low = n.lower()
-        if kind == "always_market":
-            if "market" in low and ("always" in low or "immediate" in low):
-                return cls()
-        else:
-            if any(tok in low for tok in wanted_tokens):
-                return cls()
 
-    # 3) give a great error message with what exists
-    names = [n for n, _ in available_classes]
-    raise ImportError(
-        f"Could not resolve policy '{kind}' in execlab.strategy.execution. "
-        f"Looked for candidates={candidates}. Available classes={names}"
+# -----------------------------
+# Params builders
+# -----------------------------
+def build_market_params(as_kick_scale: float, tox_persist: float) -> MarketParams:
+    return MarketParams(
+        as_kick_scale=float(as_kick_scale),
+        tox_persist=float(tox_persist),
     )
 
 
+def build_backtest_params() -> Any:
+    BacktestParams = resolve_backtest_params_class()
+    bp = BacktestParams()  # rely on defaults if any
+
+    # We KNOW fields are: horizon, parent_qty, side
+    # We'll set them directly if present.
+    if hasattr(bp, "horizon"):
+        setattr(bp, "horizon", int(HORIZON))
+    if hasattr(bp, "parent_qty"):
+        setattr(bp, "parent_qty", float(PARENT_QTY))
+    if hasattr(bp, "side"):
+        setattr(bp, "side", SIDE)
+
+    return bp
+
+
 # -----------------------------
-# Core evaluation
+# Runner call logic
 # -----------------------------
+def call_runner(runner: Callable[..., Any], policy: Any, bp: Any, mp: MarketParams, seed: int) -> Any:
+    """
+    Try several signatures until one works.
+    We already know runner expects bp.parent_qty, so bp must be BacktestParams.
+    MarketParams is passed separately.
+    """
+    candidates = [
+        # Most likely
+        {"policy": policy, "bp": bp, "market_params": mp, "seed": seed},
+        {"policy": policy, "bp": bp, "mp": mp, "seed": seed},
+        {"policy": policy, "bp": bp, "market": mp, "seed": seed},
+
+        # Some codebases use params naming
+        {"policy": policy, "params": bp, "market_params": mp, "seed": seed},
+        {"policy": policy, "backtest_params": bp, "market_params": mp, "seed": seed},
+
+        # Maybe no seed kwarg
+        {"policy": policy, "bp": bp, "market_params": mp},
+        {"policy": policy, "bp": bp, "mp": mp},
+    ]
+
+    for kw in candidates:
+        try:
+            return runner(**kw)
+        except TypeError:
+            pass
+
+    # Positional fallback variants
+    for args in (
+        (policy, bp, mp, seed),
+        (policy, bp, mp),
+        (policy, bp, seed),
+        (policy, bp),
+    ):
+        try:
+            return runner(*args)
+        except TypeError:
+            pass
+
+    raise TypeError(
+        "Could not call run_backtest with any known signature. "
+        "Please open src/execlab/backtest/mvp.py and tell me the def run_backtest(...) signature."
+    )
+
+
 def run_policy_on_regime(
     runner: Callable[..., Any],
     policy_name: str,
     policy: Any,
-    bp: MarketParams,
+    bp: Any,
+    mp: MarketParams,
     seeds: List[int],
 ) -> Dict[str, float]:
     costs: List[float] = []
@@ -185,7 +215,7 @@ def run_policy_on_regime(
     fill_rates: List[float] = []
 
     for seed in seeds:
-        out = call_runner(runner=runner, policy=policy, market_params=bp, seed=seed)
+        out = call_runner(runner, policy, bp, mp, seed)
 
         is_cost = float(_get_field(out, "implementation_shortfall"))
         remaining = float(_get_field(out, "remaining"))
@@ -211,7 +241,7 @@ def run_policy_on_regime(
 def main() -> None:
     ensure_reports_dir()
 
-    runner = resolve_mvp_runner()
+    runner = resolve_runner()
     print(f"[regime_grid] Using runner: execlab.backtest.mvp.{runner.__name__}")
 
     always_market = resolve_policy_instance("always_market")
@@ -220,24 +250,22 @@ def main() -> None:
     print(f"[regime_grid] Using policy AlwaysMarket: {always_market.__class__.__name__}")
     print(f"[regime_grid] Using policy ToxicityAware: {toxicity_aware.__class__.__name__}")
 
-    policies = {
-        "AlwaysMarket": always_market,
-        "ToxicityAware": toxicity_aware,
-    }
+    # BacktestParams is fixed across regimes in this sweep
+    bp = build_backtest_params()
 
     rows: List[Dict[str, float]] = []
 
-    for as_kick in AS_KICKS:
+    for as_kick_scale in AS_KICK_SCALES:
         for tox_persist in TOX_PERSIST:
-            bp = MarketParams(as_kick=float(as_kick), tox_persist=float(tox_persist))
+            mp = build_market_params(as_kick_scale=float(as_kick_scale), tox_persist=float(tox_persist))
 
             row: Dict[str, float] = {
-                "as_kick": float(as_kick),
+                "as_kick_scale": float(as_kick_scale),
                 "tox_persist": float(tox_persist),
             }
 
-            for name, policy in policies.items():
-                row.update(run_policy_on_regime(runner, name, policy, bp, SEEDS))
+            row.update(run_policy_on_regime(runner, "AlwaysMarket", always_market, bp, mp, SEEDS))
+            row.update(run_policy_on_regime(runner, "ToxicityAware", toxicity_aware, bp, mp, SEEDS))
 
             row["delta_mean"] = row["ToxicityAware_mean"] - row["AlwaysMarket_mean"]
             row["delta_p90"] = row["ToxicityAware_p90"] - row["AlwaysMarket_p90"]
@@ -247,11 +275,11 @@ def main() -> None:
 
             rows.append(row)
 
-    df = pd.DataFrame(rows).sort_values(["as_kick", "tox_persist"]).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(["as_kick_scale", "tox_persist"]).reset_index(drop=True)
     df.to_csv(OUT_CSV, index=False)
 
     key_cols = [
-        "as_kick",
+        "as_kick_scale",
         "tox_persist",
         "AlwaysMarket_mean",
         "ToxicityAware_mean",
