@@ -294,17 +294,7 @@ def main() -> None:
     lines.append("### Robustness heatmaps (regret_p90)\n")
     lines.extend(fig_links)
 
-    # Table snapshot
-    lines.append("\n## Robustness table\n")
-    lines.append("Columns: tox_persist_model, robust_frac, n\n")
-    lines.append("```\n")
-    lines.append(robust_table.to_string(index=False))
-    lines.append("\n```\n")
 
-    OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    print(f"Saved figures in: {FIG_DIR.as_posix()}")
-    print(f"Saved report: {OUT_MD.as_posix()}")
 
 
 if __name__ == "__main__":
