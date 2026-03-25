@@ -179,6 +179,12 @@ def run_backtest(
     
     # Au début, toute la quantité reste à exécuter.
     remaining = bp.parent_qty
+    
+    """
+    Quand on avance d’un pas de temps, on obtient un nouvel état du marché. 
+    À partir de cet état, la stratégie décide soit d’agir, soit d’attendre. 
+    Si elle décide d’agir, le moteur d’exécution tente alors de transformer cette décision en fills réels.
+    """
 
     # La simulation va avancer au maximum sur horizon étapes
     for _ in range(bp.horizon):
@@ -205,6 +211,15 @@ def run_backtest(
         Puis elle décide :
             - soit une Action
             - soit None
+        """
+        
+        """
+        Cette ligne veut dire : on donne à la stratégie l’état actuel du marché, la quantité restante,
+        et le côté buy/sell, puis on lui demande : que veux-tu faire ?
+        """
+        
+        """
+        Cette ligne n’exécute rien sur le marché
         """
         
         action = policy.decide(state=state, remaining=remaining, side=bp.side)
