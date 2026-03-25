@@ -32,14 +32,33 @@ class Action:
     aggressiveness: float = 1.0  # Ce champ mesure à quel point l’action est agressive
     
     
+    
+    
 
-"""Ce bloc définit une interface logique pour les stratégies.
+
+
+
+"""
+Ce bloc définit une interface logique pour les stratégies.
 Il dit : toute stratégie d’exécution doit savoir répondre à la question :
-“que fais-tu maintenant, étant donné l’état du marché et la quantité restante ?”"""
+“que fais-tu maintenant, étant donné l’état du marché et la quantité restante ?
+
+ExecutionPolicy ne contient pas la logique.
+Il dit seulement :
+“une stratégie valide ressemble à ça”
+”"""
+
 class ExecutionPolicy(Protocol):
     """Policy interface: decides what to do given current market state and remaining qty."""
     def decide(self, state: MarketState, remaining: float, side: Side) -> Optional[Action]:
         ...
+
+
+
+
+
+
+
 
 
 """Cette classe définit la stratégie la plus naïve : s'il reste quelque chose à exécuter, alors
