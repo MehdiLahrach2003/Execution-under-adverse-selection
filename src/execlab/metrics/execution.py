@@ -28,6 +28,7 @@ def implementation_shortfall(
         return avg_fill - arrival_mid
     return arrival_mid - avg_fill
 
+
 """Cette fonction ne calcule pas un coût d’exécution complet, mais juste un résumé statistique des prix d’exécution."""
 
 def fill_price_stats(fills: list[Fill]) -> dict[str, float]:
