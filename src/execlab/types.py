@@ -1,3 +1,8 @@
+from __future__ import annotations 
+from dataclasses import dataclass
+from typing import Literal, Optional  #it can be a string… or nothing
+
+
 # French version
 
 """Dans ce code, on définit le vocabulaire du projet en introduisant des types comme
@@ -13,9 +18,6 @@ et Fill, qui représente une exécution réelle d’un ordre."""
 Then we define two main classes: `MarketState`, representing the market state at a given point in time, 
 and `Fill`, representing an actual order execution."""
 
-from __future__ import annotations  #makes types more flexible and avoids errors
-from dataclasses import dataclass
-from typing import Literal, Optional  #it can be a string… or nothing
 
 "'Literal' allows defining two text types"
 
@@ -56,7 +58,8 @@ class MarketState:
 class Fill:
     """Execution fill event (événement d'exécution)."""
     t: int  #time at which execution occurs
-    side: Side  #executed quantity
+    side: Side  #buy or sell
+    qty : float  #executed quantity
     price: float   #price at which you were executed
     order_type: OrderType   #how you were executed : market : aggressive / limit : passive
     note: Optional[str] = None  #additional info (debug, analysis)
