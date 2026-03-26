@@ -74,7 +74,7 @@ COLS_REQUIRED = [
     "delta_p90",
     "AlwaysMarket_fill_rate",
     "ToxicityAware_fill_rate",
-    # delta_fill_rate peut manquer -> on la calcule
+    # delta_fill_rate peut manquer -> on le calcule
     "delta_avg_first_fill_t",
 ]
 
@@ -153,7 +153,7 @@ Cette fonction lit le CSV et le prépare
 
 def _load() -> pd.DataFrame:
     
-    # On vérifie si e CSV existe. Si il n'existe pas, le message dit : lance d’abord le script de grille de régimes
+    # On vérifie si le CSV existe. Si il n'existe pas, le message dit : lance d’abord le script de grille de régimes
     if not CSV_PATH.exists():
         raise FileNotFoundError(f"Missing {CSV_PATH}. Run the regime grid script first.")
     
