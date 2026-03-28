@@ -25,22 +25,22 @@ We quantify robustness using **regret_p90**. If regret columns are not present i
 
 ### Robustness heatmaps (regret_p90)
 
-- ![regret_p90](reports/figures/misspec_regret_p90_modeltox_0.50.png)
-- ![regret_p90](reports/figures/misspec_regret_p90_modeltox_0.60.png)
-- ![regret_p90](reports/figures/misspec_regret_p90_modeltox_0.70.png)
-- ![regret_p90](reports/figures/misspec_regret_p90_modeltox_0.80.png)
+- ![regret_p90](reports/figures/misspec_regret_p90_trigger_0.50.png)
+- ![regret_p90](reports/figures/misspec_regret_p90_trigger_0.60.png)
+- ![regret_p90](reports/figures/misspec_regret_p90_trigger_0.70.png)
+- ![regret_p90](reports/figures/misspec_regret_p90_trigger_0.80.png)
 
 ## Robustness table
 
-Columns: tox_persist_model, robust_frac, n
+Columns: tox_trigger_belief, robust_frac, n
 
 ```
 
- tox_persist_model  robust_frac  n
-               0.5          0.0 20
-               0.6          0.0 20
-               0.7          0.0 20
-               0.8          0.0 20
+ tox_trigger_belief  robust_frac  n
+                0.5          0.0 20
+                0.6          0.0 20
+                0.7          0.0 20
+                0.8          0.0 20
 
 ```
 
