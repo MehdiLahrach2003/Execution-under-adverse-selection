@@ -1,240 +1,497 @@
-# scripts/run_misspec_grid.py
 """
-Misspecification grid experiment (aligned with current ToxicityAwareExecution).
+Construit un rapport markdown + des heatmaps à partir de reports/misspec_grid.csv.
 
-Key idea (this codebase):
-- ToxicityAwareExecution is NOT parameterized by (as_kick_scale, tox_persist).
-- It reacts to observed state.toxicity via a threshold tox_trigger.
+Colonnes attendues dans le CSV :
+- tox_persist_true
+- tox_trigger_belief
+- as_kick_scale
+- AlwaysMarket_mean, AlwaysMarket_p90, AlwaysMarket_fill_rate
+- ToxicityAware_mean, ToxicityAware_p90, ToxicityAware_fill_rate
+- delta_mean, delta_p90, delta_fill_rate
 
-So we define misspecification as:
-- The true market regime is (as_kick_scale_true, tox_persist_true).
-- The policy is calibrated with a belief/choice of tox_trigger (threshold).
-- We evaluate AlwaysMarket vs ToxicityAwareExecution across:
-    true regimes x tox_trigger_belief grid.
+On ajoute aussi des deltas relatifs :
+- delta_mean_rel = delta_mean / abs(AlwaysMarket_mean)
+- delta_p90_rel  = delta_p90  / abs(AlwaysMarket_p90)
 
-Outputs:
-- reports/misspec_grid.csv
+Important :
+Dans ce projet, la "belief" ne correspond pas à une croyance sur tox_persist.
+La vraie variable de calibration de la stratégie est :
+- tox_trigger_belief
+
+Autrement dit :
+- le marché réel est décrit par tox_persist_true et as_kick_scale
+- la stratégie ToxicityAware est calibrée par tox_trigger_belief
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+# On importe dataclass pour définir une petite classe de configuration (HeatmapSpec)
+from dataclasses import dataclass
 
+# Path permet de manipuler les chemins de fichiers proprement
+from pathlib import Path
+
+# Iterable sert à typer une fonction qui reçoit une collection de colonnes
+from typing import Iterable
+
+# NumPy pour les calculs numériques
 import numpy as np
 
-from execlab.backtest.mvp import BacktestParams, run_backtest
-from execlab.sim.market import MarketParams
-from execlab.strategy.execution import AlwaysMarket, ToxicityAwareExecution
+# Pandas pour charger et manipuler le CSV
+import pandas as pd
+
+# Matplotlib pour tracer les heatmaps
+import matplotlib.pyplot as plt
 
 
-# -----------------------------
-# Utilities
-# -----------------------------
-def _get_value(obj: Any, keys: Sequence[str]) -> Optional[float]:
-    """Robustly extract a numeric field from dict or attribute-like object."""
-    if obj is None:
-        return None
+"""
+On définit les chemins importants.
 
-    if isinstance(obj, dict):
-        for k in keys:
-            if k in obj:
-                try:
-                    v = obj[k]
-                    if v is None:
-                        return None
-                    return float(v)
-                except Exception:
-                    return None
-        return None
+Ce script :
+- lit reports/misspec_grid.csv
+- écrit des images dans reports/figures
+- écrit un rapport markdown dans reports/MISSPEC_REPORT.md
+"""
 
-    for k in keys:
-        if hasattr(obj, k):
-            try:
-                v = getattr(obj, k)
-                if v is None:
-                    return None
-                return float(v)
-            except Exception:
-                return None
+# Dossier général des rapports
+REPORTS_DIR = Path("reports")
 
-    return None
+# Sous-dossier des figures
+FIG_DIR = REPORTS_DIR / "figures"
+
+# Fichier CSV d'entrée
+CSV_PATH = REPORTS_DIR / "misspec_grid.csv"
+
+# Fichier markdown de sortie
+OUT_MD = REPORTS_DIR / "MISSPEC_REPORT.md"
 
 
-def summarize(results: List[Any]) -> Dict[str, float]:
-    """Summary stats for IS/cost and fill rate (handles multiple naming conventions)."""
-    is_keys = [
-        "is_cost",
-        "implementation_shortfall",
-        "implementation_shortfall_cost",
-        "impl_shortfall",
-        "is",
-        "cost",
-        "mean_is",
-    ]
-    fill_keys = [
-        "fill_rate",
-        "fillrate",
-        "fill",
-        "fill_ratio",
-        "fill_fraction",
-        "mean_fill_rate",
-    ]
+"""
+La liste suivante définit les colonnes minimales que le script exige.
 
-    is_list: List[float] = []
-    fill_list: List[float] = []
-
-    for r in results:
-        is_v = _get_value(r, is_keys)
-        fill_v = _get_value(r, fill_keys)
-        is_list.append(np.nan if is_v is None else is_v)
-        fill_list.append(np.nan if fill_v is None else fill_v)
-
-    is_arr = np.array(is_list, dtype=float)
-    fill_arr = np.array(fill_list, dtype=float)
-
-    mean = float(np.nanmean(is_arr)) if np.isfinite(is_arr).any() else float("nan")
-    p90 = float(np.nanpercentile(is_arr, 90)) if np.isfinite(is_arr).any() else float("nan")
-    fill_rate = float(np.nanmean(fill_arr)) if np.isfinite(fill_arr).any() else float("nan")
-
-    return {"mean": mean, "p90": p90, "fill_rate": fill_rate}
+Pourquoi ?
+Parce que si une colonne importante manque, on préfère arrêter le script
+avec une erreur claire plutôt que produire des figures fausses ou vides.
+"""
+COLS_REQUIRED = [
+    "tox_persist_true",
+    "tox_trigger_belief",
+    "as_kick_scale",
+    "AlwaysMarket_mean",
+    "ToxicityAware_mean",
+    "delta_mean",
+    "AlwaysMarket_p90",
+    "ToxicityAware_p90",
+    "delta_p90",
+    "AlwaysMarket_fill_rate",
+    "ToxicityAware_fill_rate",
+    "delta_fill_rate",
+]
 
 
-def _coerce_to_dict(out: Any) -> Dict[str, Any]:
-    """Convert output to a dict robustly."""
-    if isinstance(out, dict):
-        return out
-    try:
-        return dict(out)
-    except Exception:
-        pass
-    try:
-        return vars(out)
-    except Exception:
-        return {"_raw": float("nan")}
+"""
+Cette classe sert à décrire une heatmap.
+
+Chaque heatmap a besoin de :
+- la colonne à afficher
+- le titre
+- le nom du fichier image
+
+On la rend immuable (frozen=True) parce qu’il s’agit d’une configuration fixe :
+une fois définie, on ne veut pas la modifier.
+"""
+@dataclass(frozen=True)
+class HeatmapSpec:
+    value_col: str
+    title: str
+    filename: str
 
 
-def run_policy(
-    policy: Any,
-    market_params: MarketParams,
-    backtest: BacktestParams,
-    seeds: Sequence[int],
-) -> List[Dict[str, Any]]:
-    """
-    Run many seeds and return raw result dicts.
+"""
+La fonction suivante vérifie que le DataFrame contient bien toutes les colonnes attendues.
+"""
+def _assert_cols(df: pd.DataFrame, required: Iterable[str]) -> None:
 
-    In your codebase version, run_backtest signature is:
-      run_backtest(policy, bp, seed=0, market_params=None) -> dict
-    """
-    outs: List[Dict[str, Any]] = []
-    for s in seeds:
-        out = run_backtest(
-            policy=policy,
-            bp=backtest,
-            seed=int(s),
-            market_params=market_params,
+    # On construit la liste des colonnes manquantes
+    missing = [c for c in required if c not in df.columns]
+
+    # S’il manque des colonnes, on arrête le script avec un message clair
+    if missing:
+        raise ValueError(
+            "misspec_grid.csv is missing expected columns:\n"
+            f"- Missing: {missing}\n"
+            f"- Available: {list(df.columns)}\n"
         )
-        outs.append(_coerce_to_dict(out))
-    return outs
 
 
-# -----------------------------
-# Experiment
-# -----------------------------
-def main() -> None:
-    # ---- fixed backtest params ----
-    backtest = BacktestParams(
-        horizon=80,
-        parent_qty=1.0,
-        side="buy",
+"""
+Cette fonction permet d'effectuer une division sécurisée.
+
+Pourquoi ?
+Parce que pour calculer des deltas relatifs, on divise par une baseline
+(AlwaysMarket_mean ou AlwaysMarket_p90), et il faut éviter les divisions par zéro.
+"""
+def _safe_div(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+
+    # On prend la valeur absolue du dénominateur
+    den_abs = np.abs(den)
+
+    # On prépare un tableau de sortie rempli de NaN
+    out = np.full_like(num, fill_value=np.nan, dtype=float)
+
+    # On ne divisera que là où le dénominateur est strictement non nul
+    mask = den_abs > 0.0
+
+    # Division uniquement aux endroits valides
+    out[mask] = num[mask] / den_abs[mask]
+
+    return out
+
+
+"""
+Cette fonction lit le CSV et prépare les données.
+
+Elle :
+- vérifie que le fichier existe
+- vérifie les colonnes
+- convertit les colonnes utiles en numérique
+- ajoute les deltas relatifs
+"""
+def _load() -> pd.DataFrame:
+
+    # Si le fichier CSV n’existe pas, on demande d’abord de lancer run_misspec_grid.py
+    if not CSV_PATH.exists():
+        raise FileNotFoundError(f"Missing {CSV_PATH}. Run the misspec grid script first.")
+
+    # On lit le CSV avec pandas
+    df = pd.read_csv(CSV_PATH)
+
+    # On vérifie que les colonnes attendues existent
+    _assert_cols(df, COLS_REQUIRED)
+
+    # On force toutes les colonnes requises à être numériques
+    # Si une valeur est invalide, elle devient NaN
+    for c in COLS_REQUIRED:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    """
+    On calcule maintenant deux colonnes supplémentaires :
+
+    1) delta_mean_rel
+       différence relative sur le coût moyen
+
+    2) delta_p90_rel
+       différence relative sur le risque extrême
+
+    L’idée est la suivante :
+    un delta absolu de 0.01 n’a pas la même importance
+    selon que la baseline vaut 0.10 ou 0.005.
+    """
+    df["delta_mean_rel"] = _safe_div(
+        df["delta_mean"].to_numpy(),
+        df["AlwaysMarket_mean"].to_numpy(),
     )
 
-    # ---- true regime grid ----
-    # We vary the true market regime (these affect the dynamics that generate state.toxicity).
-    as_kick_scale_true_grid = [0.00, 0.01, 0.02, 0.03, 0.05]
-    tox_persist_true_grid = [0.60, 0.75, 0.85, 0.95]
+    df["delta_p90_rel"] = _safe_div(
+        df["delta_p90"].to_numpy(),
+        df["AlwaysMarket_p90"].to_numpy(),
+    )
 
-    # ---- "belief" grid = policy threshold tox_trigger ----
-    # This is the only meaningful policy calibration knob in the current class.
-    tox_trigger_grid = [0.50, 0.60, 0.70, 0.80]
-
-    # Optional: also vary max_wait and slice_qty later (D.4 if you want)
-    max_wait = 30
-    slice_qty = 0.25
-
-    seeds = list(range(50))
-
-    rows: List[Dict[str, float]] = []
-
-    for as_true in as_kick_scale_true_grid:
-        for tox_true in tox_persist_true_grid:
-            market_true = MarketParams(
-                as_kick_scale=float(as_true),
-                tox_persist=float(tox_true),
-            )
-
-            # Baseline run once per true regime
-            always = AlwaysMarket()
-            am_results = run_policy(always, market_true, backtest, seeds)
-            am_stats = summarize(am_results)
-
-            for tox_trigger_belief in tox_trigger_grid:
-                tox_policy = ToxicityAwareExecution(
-                    tox_trigger=float(tox_trigger_belief),
-                    max_wait=int(max_wait),
-                    slice_qty=float(slice_qty),
-                )
-
-                tx_results = run_policy(tox_policy, market_true, backtest, seeds)
-                tx_stats = summarize(tx_results)
-
-                delta_mean = tx_stats["mean"] - am_stats["mean"]
-                delta_p90 = tx_stats["p90"] - am_stats["p90"]
-                delta_fill = tx_stats["fill_rate"] - am_stats["fill_rate"]
-
-                rows.append(
-                    {
-                        # Truth (market regime)
-                        "as_kick_scale_true": float(as_true),
-                        "tox_persist_true": float(tox_true),
-
-                        # Belief (policy calibration)
-                        "tox_trigger_belief": float(tox_trigger_belief),
-
-                        # Aliases for reports if needed
-                        "as_kick_scale": float(as_true),
-                        "tox_persist_model": float(tox_trigger_belief),  # used as a conditioning key in some reports
-
-                        # Stats
-                        "AlwaysMarket_mean": float(am_stats["mean"]),
-                        "AlwaysMarket_p90": float(am_stats["p90"]),
-                        "AlwaysMarket_fill_rate": float(am_stats["fill_rate"]),
-                        "ToxicityAware_mean": float(tx_stats["mean"]),
-                        "ToxicityAware_p90": float(tx_stats["p90"]),
-                        "ToxicityAware_fill_rate": float(tx_stats["fill_rate"]),
-
-                        # Deltas
-                        "delta_mean": float(delta_mean),
-                        "delta_p90": float(delta_p90),
-                        "delta_fill_rate": float(delta_fill),
-
-                        "n_seeds": float(len(seeds)),
-                    }
-                )
-
-    # Save CSV
-    import os
-    import csv
-
-    os.makedirs("reports", exist_ok=True)
-    out_path = os.path.join("reports", "misspec_grid.csv")
-
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"Saved: {out_path}")
+    return df
 
 
+"""
+Cette fonction prépare les données nécessaires pour tracer une heatmap.
+
+Elle prend :
+- le DataFrame complet
+- la métrique à afficher
+- une valeur fixée de tox_trigger_belief
+
+Puis elle construit un tableau 2D où :
+- les lignes = tox_persist_true
+- les colonnes = as_kick_scale
+- les cellules = la métrique choisie
+"""
+def _pivot(df: pd.DataFrame, value_col: str, tox_trigger_value: float) -> pd.DataFrame:
+
+    # On garde uniquement les lignes correspondant à la valeur fixée du seuil de toxicité
+    sub = df[np.isclose(df["tox_trigger_belief"].to_numpy(), tox_trigger_value)].copy()
+
+    # On construit un pivot :
+    # lignes = vraie persistance de toxicité
+    # colonnes = vraie intensité de l'adverse selection
+    # valeurs = métrique choisie
+    piv = sub.pivot(index="tox_persist_true", columns="as_kick_scale", values=value_col)
+
+    # On trie les axes pour avoir un ordre croissant
+    piv = piv.sort_index(axis=0).sort_index(axis=1)
+
+    return piv
+
+
+"""
+Cette fonction trace une heatmap à partir d'un pivot pandas.
+"""
+def _plot_heatmap(piv: pd.DataFrame, title: str, out_path: Path) -> None:
+
+    # On convertit le pivot en matrice NumPy
+    arr = piv.to_numpy(dtype=float)
+
+    # On crée une figure matplotlib
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # On affiche la matrice sous forme d'image colorée
+    im = ax.imshow(arr, aspect="auto")
+
+    # Titre et noms des axes
+    ax.set_title(title)
+    ax.set_xlabel("as_kick_scale (true)")
+    ax.set_ylabel("tox_persist_true")
+
+    # On place les repères sur les axes
+    ax.set_xticks(np.arange(piv.shape[1]))
+    ax.set_yticks(np.arange(piv.shape[0]))
+
+    # On affiche les vraies valeurs des paramètres en format décimal
+    ax.set_xticklabels([f"{x:.2f}" for x in piv.columns.to_numpy(dtype=float)])
+    ax.set_yticklabels([f"{y:.2f}" for y in piv.index.to_numpy(dtype=float)])
+
+    """
+    On inscrit la valeur numérique dans chaque case de la heatmap.
+
+    Cela permet une lecture précise :
+    - la couleur donne l’intuition générale
+    - le nombre donne la valeur exacte
+    """
+    for i in range(arr.shape[0]):
+        for j in range(arr.shape[1]):
+            v = arr[i, j]
+            if np.isfinite(v):
+                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=9)
+
+    # On ajoute une barre de couleur
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("value")
+
+    # On ajuste la mise en page, on sauvegarde et on ferme
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
+"""
+Cette fonction cherche :
+- la ligne où une métrique est minimale
+- la ligne où elle est maximale
+
+Pour les deltas de coût :
+- minimum = meilleur cas
+- maximum = pire cas
+"""
+def _best_worst(df: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
+
+    # On filtre les lignes où la colonne est bien finie (pas NaN, pas inf)
+    d = df[np.isfinite(df[col].to_numpy())].copy()
+
+    # Si tout est vide, on renvoie une ligne arbitraire pour éviter un plantage
+    if d.empty:
+        return df.iloc[0], df.iloc[0]
+
+    # Meilleur cas = valeur minimale
+    best = d.loc[d[col].idxmin()]
+
+    # Pire cas = valeur maximale
+    worst = d.loc[d[col].idxmax()]
+
+    return best, worst
+
+
+"""
+Fonction principale du script.
+
+C’est ici que tout est orchestré :
+- lecture du CSV
+- construction des heatmaps
+- recherche des meilleurs/pire cas
+- écriture du rapport markdown
+"""
+def main() -> None:
+
+    # On crée les dossiers de sortie si nécessaire
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # On charge les données
+    df = _load()
+
+    """
+    On extrait les différentes valeurs distinctes de tox_trigger_belief.
+
+    Chaque valeur correspond à une calibration différente de la stratégie ToxicityAware.
+    Le script produira donc une famille de heatmaps :
+    une par seuil de toxicité testé.
+    """
+    trigger_vals = sorted(df["tox_trigger_belief"].dropna().unique().tolist())
+
+    """
+    On calcule maintenant les meilleurs et pires cas globaux,
+    tous seuils confondus, pour plusieurs métriques.
+    """
+    best_mean, worst_mean = _best_worst(df, "delta_mean")
+    best_p90, worst_p90 = _best_worst(df, "delta_p90")
+    best_mean_rel, worst_mean_rel = _best_worst(df, "delta_mean_rel")
+    best_p90_rel, worst_p90_rel = _best_worst(df, "delta_p90_rel")
+
+    """
+    Le script produira cinq familles de heatmaps :
+
+    - delta_mean       : écart absolu sur le coût moyen
+    - delta_p90        : écart absolu sur le risque extrême
+    - delta_fill_rate  : écart sur le taux de remplissage
+    - delta_mean_rel   : écart relatif sur le coût moyen
+    - delta_p90_rel    : écart relatif sur le risque extrême
+    """
+    specs = [
+        HeatmapSpec(
+            "delta_mean",
+            "Misspec grid: delta_mean (ToxicityAware - AlwaysMarket)",
+            "misspec_delta_mean",
+        ),
+        HeatmapSpec(
+            "delta_p90",
+            "Misspec grid: delta_p90 (ToxicityAware - AlwaysMarket)",
+            "misspec_delta_p90",
+        ),
+        HeatmapSpec(
+            "delta_fill_rate",
+            "Misspec grid: delta_fill_rate (ToxicityAware - AlwaysMarket)",
+            "misspec_delta_fillrate",
+        ),
+        HeatmapSpec(
+            "delta_mean_rel",
+            "Misspec grid: delta_mean_rel (delta_mean / |AlwaysMarket_mean|)",
+            "misspec_delta_mean_rel",
+        ),
+        HeatmapSpec(
+            "delta_p90_rel",
+            "Misspec grid: delta_p90_rel (delta_p90 / |AlwaysMarket_p90|)",
+            "misspec_delta_p90_rel",
+        ),
+    ]
+
+    # Cette liste contiendra les liens Markdown vers les images générées
+    fig_links: list[str] = []
+
+    """
+    Pour chaque valeur de tox_trigger_belief, et pour chaque métrique,
+    on :
+    - construit le pivot
+    - trace la heatmap
+    - sauvegarde l'image
+    - mémorise le lien Markdown vers la figure
+    """
+    for tox_trigger in trigger_vals:
+        for spec in specs:
+            piv = _pivot(df, spec.value_col, tox_trigger_value=float(tox_trigger))
+            out_name = f"{spec.filename}_trigger_{float(tox_trigger):.2f}.png"
+            out_path = FIG_DIR / out_name
+            title = f"{spec.title} — belief tox_trigger={float(tox_trigger):.2f}"
+            _plot_heatmap(piv, title, out_path)
+            fig_links.append(f"- ![{spec.value_col}](reports/figures/{out_name})")
+
+    """
+    On prépare maintenant le contenu du rapport Markdown ligne par ligne.
+    """
+    lines: list[str] = []
+
+    # Titre principal
+    lines.append("# Misspecification Report — Execution under Adverse Selection\n")
+
+    # Référence au CSV source
+    lines.append(f"Artifacts generated from `{CSV_PATH.as_posix()}`.\n")
+
+    # Introduction
+    lines.append("## What this evaluates\n")
+    lines.append(
+        "We compare a policy calibrated with a toxicity threshold belief (`tox_trigger_belief`) "
+        "while the true market regime is defined by `tox_persist_true` and `as_kick_scale`.\n"
+    )
+    lines.append(
+        "All deltas are `ToxicityAware - AlwaysMarket` "
+        "(negative = improvement if Implementation Shortfall is a cost).\n"
+    )
+
+    # Résumé des meilleurs / pires cas en deltas bruts
+    lines.append("## Best / worst (raw deltas)\n")
+    lines.append(
+        f"- Best **mean IS delta**: {best_mean['delta_mean']:.6f} at "
+        f"(as_kick_scale={best_mean['as_kick_scale']:.2f}, "
+        f"tox_true={best_mean['tox_persist_true']:.2f}, "
+        f"tox_trigger={best_mean['tox_trigger_belief']:.2f})"
+    )
+    lines.append(
+        f"- Worst **mean IS delta**: {worst_mean['delta_mean']:.6f} at "
+        f"(as_kick_scale={worst_mean['as_kick_scale']:.2f}, "
+        f"tox_true={worst_mean['tox_persist_true']:.2f}, "
+        f"tox_trigger={worst_mean['tox_trigger_belief']:.2f})\n"
+    )
+
+    lines.append(
+        f"- Best **p90 IS delta**: {best_p90['delta_p90']:.6f} at "
+        f"(as_kick_scale={best_p90['as_kick_scale']:.2f}, "
+        f"tox_true={best_p90['tox_persist_true']:.2f}, "
+        f"tox_trigger={best_p90['tox_trigger_belief']:.2f})"
+    )
+    lines.append(
+        f"- Worst **p90 IS delta**: {worst_p90['delta_p90']:.6f} at "
+        f"(as_kick_scale={worst_p90['as_kick_scale']:.2f}, "
+        f"tox_true={worst_p90['tox_persist_true']:.2f}, "
+        f"tox_trigger={worst_p90['tox_trigger_belief']:.2f})\n"
+    )
+
+    # Résumé des meilleurs / pires cas en deltas relatifs
+    lines.append("## Best / worst (risk-adjusted deltas)\n")
+    lines.append(
+        "We use `delta_*_rel = delta_* / abs(AlwaysMarket_*)` to interpret differences in relative terms.\n"
+    )
+    lines.append(
+        f"- Best **mean IS delta (rel)**: {best_mean_rel['delta_mean_rel']:.6f} at "
+        f"(as_kick_scale={best_mean_rel['as_kick_scale']:.2f}, "
+        f"tox_true={best_mean_rel['tox_persist_true']:.2f}, "
+        f"tox_trigger={best_mean_rel['tox_trigger_belief']:.2f})"
+    )
+    lines.append(
+        f"- Worst **mean IS delta (rel)**: {worst_mean_rel['delta_mean_rel']:.6f} at "
+        f"(as_kick_scale={worst_mean_rel['as_kick_scale']:.2f}, "
+        f"tox_true={worst_mean_rel['tox_persist_true']:.2f}, "
+        f"tox_trigger={worst_mean_rel['tox_trigger_belief']:.2f})\n"
+    )
+    lines.append(
+        f"- Best **p90 IS delta (rel)**: {best_p90_rel['delta_p90_rel']:.6f} at "
+        f"(as_kick_scale={best_p90_rel['as_kick_scale']:.2f}, "
+        f"tox_true={best_p90_rel['tox_persist_true']:.2f}, "
+        f"tox_trigger={best_p90_rel['tox_trigger_belief']:.2f})"
+    )
+    lines.append(
+        f"- Worst **p90 IS delta (rel)**: {worst_p90_rel['delta_p90_rel']:.6f} at "
+        f"(as_kick_scale={worst_p90_rel['as_kick_scale']:.2f}, "
+        f"tox_true={worst_p90_rel['tox_persist_true']:.2f}, "
+        f"tox_trigger={worst_p90_rel['tox_trigger_belief']:.2f})\n"
+    )
+
+    # Section figures
+    lines.append("## Figures (grouped by belief threshold)\n")
+    lines.extend(fig_links)
+
+    # Écriture finale du fichier markdown
+    OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Messages de sortie
+    print(f"Saved figures in: {FIG_DIR.as_posix()}")
+    print(f"Saved report: {OUT_MD.as_posix()}")
+
+
+# Bloc de lancement
 if __name__ == "__main__":
     main()
