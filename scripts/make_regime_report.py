@@ -22,8 +22,6 @@ On va :
 """
 
 
-
-
 from __future__ import annotations  # Ça permet à Python de gérer plus souplement les annotations de type.
 
 from dataclasses import dataclass  # pour définir une petite structure de configuration des figures
