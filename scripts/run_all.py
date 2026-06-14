@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
@@ -36,6 +37,7 @@ def run(cmd: list[str]) -> None:
 
     if res.returncode != 0:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+
 
 
 def main() -> None:
@@ -58,6 +60,7 @@ def main() -> None:
     print("\n Pipeline completed successfully.")
     print("Reports generated in: reports/")
     print("Figures generated in: reports/figures/\n")
+
 
 
 if __name__ == "__main__":
