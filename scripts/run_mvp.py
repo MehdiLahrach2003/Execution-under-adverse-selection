@@ -71,7 +71,6 @@ def summarize(x: list[float]) -> dict[str, float]:
     }
 
 
-
 """
 La fonction suivante est la fonction principale du script. C'est elle qui lance toute l'expérience
 """
