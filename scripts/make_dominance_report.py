@@ -536,3 +536,4 @@ def main() -> None:
 # Bloc de lancement
 if __name__ == "__main__":
     main()
+    
