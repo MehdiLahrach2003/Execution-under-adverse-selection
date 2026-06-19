@@ -249,6 +249,7 @@ def call_runner(runner: Callable[..., Any], policy: Any, bp: Any, mp: MarketPara
         "Please open src/execlab/backtest/mvp.py and tell me the def run_backtest(...) signature."
     )
 
+
 # Cette fonction permet d'exécuter une stratégie donnée sur un régime de marché donné, sur plusieurs seeds, puis résumer les résultats
 def run_policy_on_regime(
     runner: Callable[..., Any],
