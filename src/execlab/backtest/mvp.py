@@ -39,7 +39,6 @@ from execlab.types import Fill, Side
 
 
 
-
 """
 On crée une classe contenant les paramètres du backtest 
 Cette classe permet de répondre à la question : dans quelles conditions je lance mon expérience ?
