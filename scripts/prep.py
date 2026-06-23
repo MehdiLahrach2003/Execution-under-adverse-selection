@@ -307,3 +307,5 @@ for j in range(len(contrib)):
         print("Meilleur actif : ", assets[j])
     if contrib[j] == min_contrib : 
         print("Pire actif : ", assets[j]) 
+        
+        
