@@ -308,4 +308,3 @@ for j in range(len(contrib)):
     if contrib[j] == min_contrib : 
         print("Pire actif : ", assets[j]) 
         
-        
