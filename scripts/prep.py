@@ -254,7 +254,6 @@ for i in range(len(assets)) :
 # Exercice 22 :
 
 returns = [0.02, None, -0.01, 0.03, None, 0.00]
-
 nv_liste = []
 for i in returns : 
     if i != None : 
