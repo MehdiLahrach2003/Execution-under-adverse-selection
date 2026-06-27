@@ -289,11 +289,9 @@ for i in range(len(assets)) :
     S2 += weights[i]*benchmark_returns[i]
     print(assets[i], ":", weights[i]*returns[i])
     contrib.append(weights[i]*returns[i])
-
 print("Performance portefeuille :", S1)  
 print("Performance benchmark :", S2)  
 print("Surperformance :", S1-S2)
-
 max_contrib = contrib[0]
 min_contrib = contrib[0]
 for i in range(len(contrib)) : 
