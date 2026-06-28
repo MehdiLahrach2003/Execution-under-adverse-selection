@@ -242,7 +242,6 @@ print(S)
 
 assets = ["Actions", "Obligations", "Private Equity", "Monétaire"]
 returns = [0.08, 0.015, -0.04, 0.002]
-
 for i in range(len(assets)) : 
     if returns[i] >= 0.05 : 
         print(assets[i], ": forte performance")
@@ -263,7 +262,6 @@ print(nv_liste)
 # Exercice 23 :
 
 returns = [0.02, None, -0.01, 0.03, None, 0.00]
-
 print([0 if x is None else x for x in returns])
 
 # Exercice 24 :
