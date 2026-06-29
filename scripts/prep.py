@@ -213,7 +213,6 @@ for i in range(len(companies)) :
 companies = ["Entreprise A", "Entreprise B", "Entreprise C", "Entreprise D"]
 esg_scores = [71.0, 70.5, 82.5, 55.0]
 threshold = 70
-
 for i in range(len(esg_scores)): 
     if esg_scores[i] >= 70 : 
         print(companies[i])
@@ -232,7 +231,6 @@ for i in range(len(bonds)) :
 bonds = ["Obligation A", "Obligation B", "Obligation C"]
 weights = [0.40, 0.35, 0.25]
 durations = [3, 5, 8]
-
 S = 0
 for i in range(len(bonds)) : 
     S += weights[i]*durations[i]
