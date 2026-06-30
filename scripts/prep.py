@@ -204,7 +204,6 @@ companies = ["Entreprise A", "Entreprise B", "Entreprise C"]
 environment = [80, 60, 90]
 social = [70, 75, 85]
 governance = [60, 80, 70]
-
 for i in range(len(companies)) : 
     print(companies[i], ":", 0.4*environment[i] + 0.3*social[i] + 0.3*governance[i])
     
